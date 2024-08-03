@@ -1,25 +1,37 @@
 from fastapi import FastAPI, HTTPException
 from database import get_images_and_metadata, update_image_status
-import requests
 from requests_ntlm import HttpNtlmAuth
-from office365.sharepoint.client_context import ClientContext
-from office365.runtime.auth.authentication_context import AuthenticationContext
 from dotenv import load_dotenv
 from PIL import Image
 import magic
 import io
 import os
+import requests
+from datetime import datetime
+from urllib.parse import quote, urljoin
 
 # Load environment variables from .env file
 load_dotenv()
 
 app = FastAPI()
 
+
 # SharePoint credentials and site URL
-site_url = os.getenv('SHAREPOINT_SITE_URL')
+base_site_url = os.getenv('SHAREPOINT_SITE_URL')  # e.g., "http://portal/sites"
+site_path = os.getenv('SHAREPOINT_SITE_PATH')    # e.g., "DocuCenter2"
+library_name = os.getenv('SHAREPOINT_LIBRARY_NAME')
 username = os.getenv('SHAREPOINT_USERNAME')
 password = os.getenv('SHAREPOINT_PASSWORD')
-library_name = os.getenv('SHAREPOINT_LIBRARY_NAME')
+
+# Ensure the base site URL is correct
+if not base_site_url.endswith('/'):
+    base_site_url += '/'
+
+# Full site URL for API requests
+site_url = urljoin(base_site_url, f"{site_path}/")
+
+# NTLM authentication
+ntlm_auth = HttpNtlmAuth(username, password)
 
 
 def is_valid_image(file_item):
@@ -27,13 +39,44 @@ def is_valid_image(file_item):
         image = Image.open(io.BytesIO(file_item))
         image.verify()
         return True
-    except (IOError, SyntaxError) as e:
+    except (IOError, SyntaxError):
         return False
 
 
 def get_mime_type(file_item):
     mime = magic.Magic(mime=True)
     return mime.from_buffer(file_item)
+
+
+def generate_unique_filename(pin, doctype, original_filename):
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    name, ext = os.path.splitext(original_filename)
+    unique_name = f"{pin}_{doctype}_{timestamp}{ext}"
+    return unique_name
+
+
+def get_request_digest():
+    digest_url = urljoin(site_url, '_api/contextinfo')
+    digest_headers = {
+        "accept": "application/json;odata=verbose",
+        "content-type": "application/json;odata=verbose"
+    }
+    digest_response = requests.post(digest_url, headers=digest_headers, auth=ntlm_auth)
+    digest_value = digest_response.json()['d']['GetContextWebInformation']['FormDigestValue']
+    return digest_value
+
+
+def get_list_item_type(sharepoint_library_name):
+    list_url = urljoin(site_url, f"_api/web/lists/GetByTitle('{sharepoint_library_name}')")
+    headers = {
+        "accept": "application/json;odata=verbose"
+    }
+    response = requests.get(list_url, headers=headers, auth=ntlm_auth)
+    if response.status_code == 200:
+        list_data = response.json()
+        return list_data['d']['ListItemEntityTypeFullName']
+    else:
+        raise Exception(f"Failed to fetch list item type: {response.status_code}, {response.text}")
 
 
 @app.post("/upload_images")
@@ -43,10 +86,11 @@ async def upload_images():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # NTLM authentication context
-    auth_context = AuthenticationContext(site_url)
-    auth_context.acquire_token_for_user(username, password)
-    ctx = ClientContext(site_url, auth_context)
+    # Fetch the correct List Item Entity Type for the library
+    try:
+        list_item_type = get_list_item_type(library_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     for _, row in images_data.iterrows():
         file_id = row['fileid']
@@ -55,7 +99,10 @@ async def upload_images():
         doctype = row['doctype']
         doctype_desc = row['doctype_desc']
         file_item = row['file_item']
-        filename = row['filename']
+        original_filename = row['filename']
+
+        # Generate a unique filename
+        filename = generate_unique_filename(pin, doctype, original_filename)
 
         # Check the MIME type of the file item
         mime_type = get_mime_type(file_item)
@@ -69,33 +116,77 @@ async def upload_images():
         # Validate image file types
         if mime_type in ['image/jpeg', 'image/png', 'image/bmp']:
             if not is_valid_image(file_item):
-                update_image_status(file_id, None, "Invalid document file", filename)
+                update_image_status(file_id, None, "Invalid document file", original_filename)
                 continue
         elif mime_type not in valid_types:
-            update_image_status(file_id, None, f"Unsupported file type: {mime_type}", filename)
+            update_image_status(file_id, None, f"Unsupported file type: {mime_type}", original_filename)
             continue
 
-        # Upload the image to SharePoint
+        # Upload the file to SharePoint
         try:
-            target_folder = ctx.web.lists.get_by_title(library_name).root_folder
-            upload_file = target_folder.upload_file(filename, file_item).execute_query()
+            digest_value = get_request_digest()
 
-            # Update file metadata
-            file_item = upload_file.listItemAllFields
-            file_item.set_property('PIN', pin)
-            file_item.set_property('Document Type', doctype_desc)
-            file_item.update()
-            ctx.execute_query()
+            # Construct the folder URL
+            encoded_library_name = quote(library_name)
+            folder_url = urljoin(site_url, f"_api/web/GetFolderByServerRelativeUrl('/sites/{site_path}/{encoded_library_name}')")
 
-            # Construct the SharePoint image link
-            sharepoint_image_link = f"{site_url}/{library_name}/{filename}"
+            # Check if the folder exists in SharePoint
+            folder_response = requests.get(folder_url, headers={"accept": "application/json;odata=verbose"}, auth=ntlm_auth)
 
-            # Update the SQL Server database with the SharePoint image link and status
-            update_image_status(file_id, sharepoint_image_link, "Uploaded successfully", filename)
+            if folder_response.status_code != 200:
+                update_image_status(file_id, None, f"Folder not found: {folder_response.status_code}", original_filename)
+                continue
+
+            upload_url = urljoin(site_url, f"_api/web/GetFolderByServerRelativeUrl('/sites/{site_path}/{encoded_library_name}')/Files/add(url='{quote(filename)}',overwrite=true)")
+            headers = {
+                "accept": "application/json;odata=verbose",
+                "content-type": "application/octet-stream",
+                "X-RequestDigest": digest_value
+            }
+
+            upload_response = requests.post(upload_url, headers=headers, data=file_item, auth=ntlm_auth)
+
+            if upload_response.status_code in [200, 201]:  # Check for successful status codes
+                # Get the uploaded file item
+                file_url = f"/sites/{site_path}/{encoded_library_name}/{quote(filename)}"
+                file_item_url = urljoin(site_url, f"_api/web/GetFileByServerRelativeUrl('{file_url}')/ListItemAllFields")
+
+                file_item_response = requests.get(file_item_url, auth=ntlm_auth, headers={"accept": "application/json;odata=verbose"})
+
+                if file_item_response.status_code == 200:
+                    file_item_json = file_item_response.json()
+                    item_id = file_item_json['d']['ID']
+                    update_metadata_url = urljoin(site_url, f"_api/web/lists/getbytitle('{encoded_library_name}')/items({item_id})")
+                    update_data = {
+                        "__metadata": {"type": list_item_type},  # Use the correct list item type
+                        "PIN": pin,
+                        "Document_x0020_Type": doctype
+                    }
+                    update_headers = {
+                        "accept": "application/json;odata=verbose",
+                        "content-type": "application/json;odata=verbose",
+                        "X-HTTP-Method": "MERGE",
+                        "If-Match": "*",
+                        "X-RequestDigest": digest_value  # Include the request digest in headers
+                    }
+                    update_response = requests.post(update_metadata_url, headers=update_headers, json=update_data, auth=ntlm_auth)
+                    if update_response.status_code in [200, 204]:  # 204 is No Content, which is also a success status
+                        # Construct the SharePoint file link
+                        sharepoint_file_link = urljoin(site_url, f"/sites/{site_path}/{encoded_library_name}/{quote(filename)}")
+
+                        # Update the SQL Server database with the SharePoint file link and status
+                        update_image_status(file_id, sharepoint_file_link, "Uploaded successfully", original_filename)
+                    else:
+                        update_image_status(file_id, None, f"Failed to update metadata: {update_response.text}", original_filename)
+                else:
+                    update_image_status(file_id, None, f"Failed to get file item: {file_item_response.text}", original_filename)
+            else:
+                update_image_status(file_id, None, f"Failed to upload: {upload_response.text}", original_filename)
         except Exception as e:
-            update_image_status(file_id, None, f"Failed to upload {str(e)}", filename)
+            update_image_status(file_id, None, f"Failed to upload: {str(e)}", original_filename)
 
-    return {"status": "success", "message": "Images uploaded successfully"}
+    return {"status": "success", "message": "Files uploaded successfully"}
+
 
 if __name__ == "__main__":
     import uvicorn
