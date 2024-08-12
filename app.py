@@ -109,12 +109,19 @@ async def upload_images():
 
         # Validate file types
         valid_types = [
-            'image/jpeg', 'image/png', 'image/bmp', 'application/pdf',
-            'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            'image/jpeg',
+            'image/png',
+            'image/bmp',
+            'image/gif',
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel',  # For .xls files
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'  # For .xlsx files
         ]
 
         # Validate image file types
-        if mime_type in ['image/jpeg', 'image/png', 'image/bmp']:
+        if mime_type in ['image/jpeg', 'image/png', 'image/bmp', 'image/gif']:
             if not is_valid_image(file_item):
                 update_image_status(file_id, None, "Invalid document file", original_filename)
                 continue
