@@ -10,5 +10,4 @@ pillow
 python-magic
 sqlalchemy
 python-magic-bin
-
 pydantic

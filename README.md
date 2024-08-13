@@ -49,7 +49,8 @@ This project is a FastAPI application that integrates with SQL Server to retriev
     SHAREPOINT_SITE_PATH=site_path e.g. 'DocuCenter2'
     SHAREPOINT_USERNAME=your_domain\your_sharepoint_username e.g. MYCOMPANY.COM\username
     SHAREPOINT_PASSWORD=your_sharepoint_password
-    SHAREPOINT_DOC_LIBRARY=YourDocumentLibrary e.g. 'Test Image Library'
+    SHAREPOINT_LIBRARY_NAME_BENEFIT=YourDocumentLibrary e.g. 'Benefit Library'
+    SHAREPOINT_LIBRARY_NAME_DMU=YourDocumentLibrary e.g. 'DMU Library'
     DB_TABLE_1=your_table_name
     ```
 
@@ -90,12 +91,20 @@ Ensure your SQL Server database has the following structure (adjust field names 
    CREATE TABLE Documents (
     fileid INT PRIMARY KEY,
     pin NVARCHAR(18),
+    firstname NVARCHAR(100),
+    lastname NVARCHAR(100),
+    middlename NVARCHAR(100),
+    phone NVARCHAR(30),
+    pin NVARCHAR(18),
+    employer_name NVARCHAR(100),
+    employer_code NVARCHAR(30),
     description NVARCHAR(128),
     doctype NVARCHAR(10),
     doctype_desc NVARCHAR(100),
     file_item VARBINARY(MAX),
-    filename NVARCHAR(255)
-   );
+    filename NVARCHAR(255),
+    file_link NVARCHAR(300),
+    status NVARCHAR(500)
    ```
 
 ## Dependencies
@@ -113,6 +122,7 @@ The project relies on the following libraries, specified in requirements.txt:
 - python-magic
 - sqlalchemy
 - python-magic-bin
+- pydantic
 
 ## Contributing
 Contributions are welcome! Please fork the repository and submit a pull request.
