@@ -34,10 +34,10 @@ def get_document_and_metadata(document_type):
              f"[EMPNAME] AS employer_name, [EMPCODE] AS employer_code, "
              f"[DOCTYPE_NAME] AS doc_type, [EDESC] AS 'desc', [FILEITEM] AS file_item, "
              f"[FILENAME] AS filename FROM {query_table}  WHERE [status] IS NULL "
-             f"AND [APPLICATION_TYPE = :document_type")
+             f"AND [APPLICATION_TYPE] = ?")
 
     # Use the engine to read the SQL query into a DataFrame
-    df = pd.read_sql(query, engine, params={"document_type": document_type})
+    df = pd.read_sql(query, engine, params=(document_type,))
 
     return df
 

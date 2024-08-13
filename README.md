@@ -49,6 +49,7 @@ This project is a FastAPI application that integrates with SQL Server to retriev
     SHAREPOINT_SITE_PATH=site_path e.g. 'DocuCenter2'
     SHAREPOINT_USERNAME=your_domain\your_sharepoint_username e.g. MYCOMPANY.COM\username
     SHAREPOINT_PASSWORD=your_sharepoint_password
+    SHAREPOINT_LIBRARY_NAME=YourDocumentLibrary e.g. 'Benefit Library'
     SHAREPOINT_LIBRARY_NAME_BENEFIT=YourDocumentLibrary e.g. 'Benefit Library'
     SHAREPOINT_LIBRARY_NAME_DMU=YourDocumentLibrary e.g. 'DMU Library'
     DB_TABLE_1=your_table_name

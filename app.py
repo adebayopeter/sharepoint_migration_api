@@ -53,10 +53,16 @@ def get_mime_type(file_item):
     return mime.from_buffer(file_item)
 
 
+def sanitize_doctype(doctype):
+    # Replace or remove special characters that might cause issues
+    return doctype.replace("/", "-").replace("\\", "-").replace(" ", "_")
+
+
 def generate_unique_filename(pin, doctype, original_filename):
+    sanitized_doctype = sanitize_doctype(doctype)
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     name, ext = os.path.splitext(original_filename)
-    unique_name = f"{pin}_{doctype}_{timestamp}{ext}"
+    unique_name = f"{pin}_{sanitized_doctype}_{timestamp}{ext}"
     return unique_name
 
 
@@ -110,9 +116,14 @@ async def upload_access_documents(request: UploadRequest):
     for _, row in images_data.iterrows():
         file_id = row['fileid']
         pin = row['pin']
+        firstname = row['firstname']
+        lastname = row['lastname']
+        middlename = row['middlename']
+        phone = row['phone']
+        employer_name = row['employer_name']
+        employer_code = row['employer_code']
         description = row['desc']
-        doctype = row['doctype']
-        doctype_desc = row['doctype_desc']
+        doctype = row['doc_type']
         file_item = row['file_item']
         original_filename = row['filename']
 
@@ -181,8 +192,14 @@ async def upload_access_documents(request: UploadRequest):
                     update_metadata_url = urljoin(site_url, f"_api/web/lists/getbytitle('{encoded_library_name}')/items({item_id})")
                     update_data = {
                         "__metadata": {"type": list_item_type},  # Use the correct list item type
-                        "PIN": pin,
-                        "Document_x0020_Type": doctype
+                        "RSAPin": pin,
+                        "FirstName": firstname,
+                        "Surname": lastname,
+                        "OtherNames": middlename,
+                        "MobileNo": phone,
+                        "EmployerName": employer_name,
+                        "EmployerCode": employer_code,
+                        "DocumentType": doctype
                     }
                     update_headers = {
                         "accept": "application/json;odata=verbose",
