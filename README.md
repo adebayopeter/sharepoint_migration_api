@@ -105,6 +105,7 @@ Ensure your SQL Server database has the following structure (adjust field names 
     filename NVARCHAR(255),
     file_link NVARCHAR(300),
     status NVARCHAR(500)
+   );
    ```
 
 ## Dependencies
