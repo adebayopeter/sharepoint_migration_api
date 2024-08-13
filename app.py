@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
-from database import get_images_and_metadata, update_image_status
+from pydantic import BaseModel
+from database import get_document_and_metadata, update_document_status
 from requests_ntlm import HttpNtlmAuth
 from dotenv import load_dotenv
 from PIL import Image
@@ -10,6 +11,11 @@ import requests
 from datetime import datetime
 from urllib.parse import quote, urljoin
 
+
+class UploadRequest(BaseModel):
+    document_type: str
+
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -19,7 +25,6 @@ app = FastAPI()
 # SharePoint credentials and site URL
 base_site_url = os.getenv('SHAREPOINT_SITE_URL')  # e.g., "http://portal/sites"
 site_path = os.getenv('SHAREPOINT_SITE_PATH')    # e.g., "DocuCenter2"
-library_name = os.getenv('SHAREPOINT_LIBRARY_NAME')
 username = os.getenv('SHAREPOINT_USERNAME')
 password = os.getenv('SHAREPOINT_PASSWORD')
 
@@ -79,10 +84,20 @@ def get_list_item_type(sharepoint_library_name):
         raise Exception(f"Failed to fetch list item type: {response.status_code}, {response.text}")
 
 
-@app.post("/upload_images")
-async def upload_images():
+@app.post("/upload/documents")
+async def upload_access_documents(request: UploadRequest):
+    document_type = request.document_type.lower()
+
+    if document_type not in ["dmu", "benefit"]:
+        raise HTTPException(status_code=400, detail="Invalid document type. Must be 'dmu' or 'benefit'.")
+
+    if document_type == 'dmu':
+        library_name = os.getenv('SHAREPOINT_LIBRARY_NAME_DMU')
+    else:
+        library_name = os.getenv('SHAREPOINT_LIBRARY_NAME_BENEFIT')
+
     try:
-        images_data = get_images_and_metadata()
+        images_data = get_document_and_metadata(document_type)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -123,10 +138,10 @@ async def upload_images():
         # Validate image file types
         if mime_type in ['image/jpeg', 'image/png', 'image/bmp', 'image/gif']:
             if not is_valid_image(file_item):
-                update_image_status(file_id, None, "Invalid document file", original_filename)
+                update_document_status(file_id, None, "Invalid document file", original_filename)
                 continue
         elif mime_type not in valid_types:
-            update_image_status(file_id, None, f"Unsupported file type: {mime_type}", original_filename)
+            update_document_status(file_id, None, f"Unsupported file type: {mime_type}", original_filename)
             continue
 
         # Upload the file to SharePoint
@@ -141,7 +156,7 @@ async def upload_images():
             folder_response = requests.get(folder_url, headers={"accept": "application/json;odata=verbose"}, auth=ntlm_auth)
 
             if folder_response.status_code != 200:
-                update_image_status(file_id, None, f"Folder not found: {folder_response.status_code}", original_filename)
+                update_document_status(file_id, None, f"Folder not found: {folder_response.status_code}", original_filename)
                 continue
 
             upload_url = urljoin(site_url, f"_api/web/GetFolderByServerRelativeUrl('/sites/{site_path}/{encoded_library_name}')/Files/add(url='{quote(filename)}',overwrite=true)")
@@ -182,15 +197,15 @@ async def upload_images():
                         sharepoint_file_link = urljoin(site_url, f"/sites/{site_path}/{encoded_library_name}/{quote(filename)}")
 
                         # Update the SQL Server database with the SharePoint file link and status
-                        update_image_status(file_id, sharepoint_file_link, "Uploaded successfully", original_filename)
+                        update_document_status(file_id, sharepoint_file_link, "Uploaded successfully", original_filename)
                     else:
-                        update_image_status(file_id, None, f"Failed to update metadata: {update_response.text}", original_filename)
+                        update_document_status(file_id, None, f"Failed to update metadata: {update_response.text}", original_filename)
                 else:
-                    update_image_status(file_id, None, f"Failed to get file item: {file_item_response.text}", original_filename)
+                    update_document_status(file_id, None, f"Failed to get file item: {file_item_response.text}", original_filename)
             else:
-                update_image_status(file_id, None, f"Failed to upload: {upload_response.text}", original_filename)
+                update_document_status(file_id, None, f"Failed to upload: {upload_response.text}", original_filename)
         except Exception as e:
-            update_image_status(file_id, None, f"Failed to upload: {str(e)}", original_filename)
+            update_document_status(file_id, None, f"Failed to upload: {str(e)}", original_filename)
 
     return {"status": "success", "message": "Files uploaded successfully"}
 
