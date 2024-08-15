@@ -21,6 +21,7 @@ def get_document_and_metadata(document_type):
     server = os.getenv('DB_SERVER')
     database = os.getenv('DB_DATABASE')
     driver = quote_plus(os.getenv('DB_DRIVER'))
+    file_batch = os.getenv('FILE_BATCH_NO')
 
     # Create the connection string
     conn_str = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}"
@@ -29,7 +30,7 @@ def get_document_and_metadata(document_type):
     engine = create_engine(conn_str)
 
     query_table = os.getenv('DB_TABLE_1')
-    query = (f"SELECT [FILEID] AS fileid, [RSAPIN] AS pin, [FNAME] AS firstname, "
+    query = (f"SELECT TOP {file_batch} [FILEID] AS fileid, [RSAPIN] AS pin, [FNAME] AS firstname, "
              f"[LNAME] AS lastname, [MNAME] AS middlename, [PHONE] AS phone, "
              f"[EMPNAME] AS employer_name, [EMPCODE] AS employer_code, "
              f"[DOCTYPE_NAME] AS doc_type, [EDESC] AS 'desc', [FILEITEM] AS file_item, "
