@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from database import get_document_and_metadata, update_document_status
+from database import get_document_and_metadata, update_document_status, get_documents_with_file_path
 from requests_ntlm import HttpNtlmAuth
 from dotenv import load_dotenv
 from PIL import Image
@@ -12,7 +12,7 @@ from datetime import datetime
 from urllib.parse import quote, urljoin
 
 
-class UploadRequest(BaseModel):
+class DocTypeRequest(BaseModel):
     document_type: str
 
 
@@ -91,7 +91,7 @@ def get_list_item_type(sharepoint_library_name):
 
 
 @app.post("/upload/documents")
-async def upload_access_documents(request: UploadRequest):
+async def upload_access_documents(request: DocTypeRequest):
     document_type = request.document_type.lower()
 
     if document_type not in ["dmu", "benefit"]:
@@ -103,7 +103,7 @@ async def upload_access_documents(request: UploadRequest):
         library_name = os.getenv('SHAREPOINT_LIBRARY_NAME_BENEFIT')
 
     try:
-        images_data = get_document_and_metadata(document_type)
+        documents_data = get_document_and_metadata(document_type)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -113,7 +113,7 @@ async def upload_access_documents(request: UploadRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    for _, row in images_data.iterrows():
+    for _, row in documents_data.iterrows():
         file_id = row['fileid']
         pin = row['pin']
         firstname = row['firstname']
@@ -185,6 +185,142 @@ async def upload_access_documents(request: UploadRequest):
                 file_item_url = urljoin(site_url, f"_api/web/GetFileByServerRelativeUrl('{file_url}')/ListItemAllFields")
 
                 file_item_response = requests.get(file_item_url, auth=ntlm_auth, headers={"accept": "application/json;odata=verbose"})
+
+                if file_item_response.status_code == 200:
+                    file_item_json = file_item_response.json()
+                    item_id = file_item_json['d']['ID']
+                    update_metadata_url = urljoin(site_url, f"_api/web/lists/getbytitle('{encoded_library_name}')/items({item_id})")
+                    update_data = {
+                        "__metadata": {"type": list_item_type},  # Use the correct list item type
+                        "RSAPin": pin,
+                        "FirstName": firstname,
+                        "Surname": lastname,
+                        "OtherNames": middlename,
+                        "MobileNo": phone,
+                        "EmployerName": employer_name,
+                        "EmployerCode": employer_code,
+                        "DocumentType": doctype
+                    }
+                    update_headers = {
+                        "accept": "application/json;odata=verbose",
+                        "content-type": "application/json;odata=verbose",
+                        "X-HTTP-Method": "MERGE",
+                        "If-Match": "*",
+                        "X-RequestDigest": digest_value  # Include the request digest in headers
+                    }
+                    update_response = requests.post(update_metadata_url, headers=update_headers, json=update_data, auth=ntlm_auth)
+                    if update_response.status_code in [200, 204]:  # 204 is No Content, which is also a success status
+                        # Construct the SharePoint file link
+                        sharepoint_file_link = urljoin(site_url, f"/sites/{site_path}/{encoded_library_name}/{quote(filename)}")
+
+                        # Update the SQL Server database with the SharePoint file link and status
+                        update_document_status(file_id, sharepoint_file_link, "Uploaded successfully", original_filename)
+                    else:
+                        update_document_status(file_id, None, f"Failed to update metadata: {update_response.text}", original_filename)
+                else:
+                    update_document_status(file_id, None, f"Failed to get file item: {file_item_response.text}", original_filename)
+            else:
+                update_document_status(file_id, None, f"Failed to upload: {upload_response.text}", original_filename)
+        except Exception as e:
+            update_document_status(file_id, None, f"Failed to upload: {str(e)}", original_filename)
+
+    return {"status": "success", "message": "Files uploaded successfully"}
+
+
+@app.post("/upload/documents-from-path")
+async def upload_documents_from_path(request: DocTypeRequest):
+    document_type = request.document_type.lower()
+
+    if document_type not in ["dmu", "benefit"]:
+        raise HTTPException(status_code=400, detail="Invalid document type. Must be 'dmu' or 'benefit'.")
+
+    if document_type == 'dmu':
+        library_name = os.getenv('SHAREPOINT_LIBRARY_NAME_DMU')
+    else:
+        library_name = os.getenv('SHAREPOINT_LIBRARY_NAME_BENEFIT')
+
+    try:
+        documents_data = get_documents_with_file_path(document_type)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Fetch the correct List Item Entity Type for the library
+    try:
+        list_item_type = get_list_item_type(library_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    for _, row in documents_data.iterrows():
+        file_id = row['fileid']
+        pin = row['pin']
+        firstname = row['firstname']
+        lastname = row['lastname']
+        middlename = row['middlename']
+        phone = row['phone']
+        employer_name = row['employer_name']
+        employer_code = row['employer_code']
+        description = row['desc']
+        doctype = row['doc_type']
+        file_path = row['file_path']
+        original_filename = os.path.basename(file_path)
+
+        # Generate a unique filename
+        filename = generate_unique_filename(pin, doctype, original_filename)
+
+        # Check if the file exists
+        if not os.path.exists(file_path):
+            update_document_status(file_id, None, "File not found", original_filename)
+            continue
+
+        # Check the file extension and validate file types
+        ext = os.path.splitext(original_filename)[1].lower()
+        valid_types = [
+            '.jpeg', '.jpg', '.png', '.bmp', '.gif', '.pdf', '.doc', '.docx', '.xls', '.xlsx'
+        ]
+
+        if ext not in valid_types:
+            update_document_status(file_id, None, f"Unsupported file type: {ext}", original_filename)
+            continue
+
+        # Upload the file to SharePoint
+        try:
+            # Read the file content from the file path
+            with open(file_path, 'rb') as file:
+                file_content = file.read()
+
+            digest_value = get_request_digest()
+
+            # Construct the folder URL
+            encoded_library_name = quote(library_name)
+            folder_url = urljoin(site_url,
+                                 f"_api/web/GetFolderByServerRelativeUrl('/sites/{site_path}/{encoded_library_name}')")
+
+            # Check if the folder exists in SharePoint
+            folder_response = requests.get(folder_url,
+                                           headers={"accept": "application/json;odata=verbose"}, auth=ntlm_auth)
+
+            if folder_response.status_code != 200:
+                update_document_status(file_id, None,
+                                       f"Folder not found: {folder_response.status_code}", original_filename)
+                continue
+
+            upload_url = urljoin(site_url,
+                                 f"_api/web/GetFolderByServerRelativeUrl('/sites/{site_path}/{encoded_library_name}')/Files/add(url='{quote(filename)}',overwrite=true)")
+            headers = {
+                "accept": "application/json;odata=verbose",
+                "content-type": "application/octet-stream",
+                "X-RequestDigest": digest_value
+            }
+
+            upload_response = requests.post(upload_url, headers=headers, data=file_content, auth=ntlm_auth)
+
+            if upload_response.status_code in [200, 201]:  # Check for successful status codes
+                # Get the uploaded file item
+                file_url = f"/sites/{site_path}/{encoded_library_name}/{quote(filename)}"
+                file_item_url = urljoin(site_url, f"_api/web/GetFileByServerRelativeUrl('{file_url}')/ListItemAllFields")
+
+                file_item_response = requests.get(file_item_url, auth=ntlm_auth,
+                                                  headers={"accept": "application/json;odata=verbose"})
 
                 if file_item_response.status_code == 200:
                     file_item_json = file_item_response.json()

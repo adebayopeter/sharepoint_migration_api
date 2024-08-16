@@ -74,3 +74,7 @@ def update_document_status(ref_id, doc_link, status, filename):
             'ref_id': ref_id
         })
         connection.commit()
+
+
+def get_documents_with_file_path(document_type):
+    pass
