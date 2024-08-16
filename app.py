@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
-from database import get_images_and_metadata, update_image_status
+from pydantic import BaseModel
+from database import get_document_and_metadata, update_document_status
 from requests_ntlm import HttpNtlmAuth
 from dotenv import load_dotenv
 from PIL import Image
@@ -10,6 +11,11 @@ import requests
 from datetime import datetime
 from urllib.parse import quote, urljoin
 
+
+class UploadRequest(BaseModel):
+    document_type: str
+
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -19,7 +25,6 @@ app = FastAPI()
 # SharePoint credentials and site URL
 base_site_url = os.getenv('SHAREPOINT_SITE_URL')  # e.g., "http://portal/sites"
 site_path = os.getenv('SHAREPOINT_SITE_PATH')    # e.g., "DocuCenter2"
-library_name = os.getenv('SHAREPOINT_LIBRARY_NAME')
 username = os.getenv('SHAREPOINT_USERNAME')
 password = os.getenv('SHAREPOINT_PASSWORD')
 
@@ -48,10 +53,16 @@ def get_mime_type(file_item):
     return mime.from_buffer(file_item)
 
 
+def sanitize_doctype(doctype):
+    # Replace or remove special characters that might cause issues
+    return doctype.replace("/", "-").replace("\\", "-").replace(" ", "_")
+
+
 def generate_unique_filename(pin, doctype, original_filename):
+    sanitized_doctype = sanitize_doctype(doctype)
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     name, ext = os.path.splitext(original_filename)
-    unique_name = f"{pin}_{doctype}_{timestamp}{ext}"
+    unique_name = f"{pin}_{sanitized_doctype}_{timestamp}{ext}"
     return unique_name
 
 
@@ -79,10 +90,20 @@ def get_list_item_type(sharepoint_library_name):
         raise Exception(f"Failed to fetch list item type: {response.status_code}, {response.text}")
 
 
-@app.post("/upload_images")
-async def upload_images():
+@app.post("/upload/documents")
+async def upload_access_documents(request: UploadRequest):
+    document_type = request.document_type.lower()
+
+    if document_type not in ["dmu", "benefit"]:
+        raise HTTPException(status_code=400, detail="Invalid document type. Must be 'dmu' or 'benefit'.")
+
+    if document_type == 'dmu':
+        library_name = os.getenv('SHAREPOINT_LIBRARY_NAME_DMU')
+    else:
+        library_name = os.getenv('SHAREPOINT_LIBRARY_NAME_BENEFIT')
+
     try:
-        images_data = get_images_and_metadata()
+        images_data = get_document_and_metadata(document_type)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -95,9 +116,14 @@ async def upload_images():
     for _, row in images_data.iterrows():
         file_id = row['fileid']
         pin = row['pin']
+        firstname = row['firstname']
+        lastname = row['lastname']
+        middlename = row['middlename']
+        phone = row['phone']
+        employer_name = row['employer_name']
+        employer_code = row['employer_code']
         description = row['desc']
-        doctype = row['doctype']
-        doctype_desc = row['doctype_desc']
+        doctype = row['doc_type']
         file_item = row['file_item']
         original_filename = row['filename']
 
@@ -109,17 +135,24 @@ async def upload_images():
 
         # Validate file types
         valid_types = [
-            'image/jpeg', 'image/png', 'image/bmp', 'application/pdf',
-            'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            'image/jpeg',
+            'image/png',
+            'image/bmp',
+            'image/gif',
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel',  # For .xls files
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'  # For .xlsx files
         ]
 
         # Validate image file types
-        if mime_type in ['image/jpeg', 'image/png', 'image/bmp']:
+        if mime_type in ['image/jpeg', 'image/png', 'image/bmp', 'image/gif']:
             if not is_valid_image(file_item):
-                update_image_status(file_id, None, "Invalid document file", original_filename)
+                update_document_status(file_id, None, "Invalid document file", original_filename)
                 continue
         elif mime_type not in valid_types:
-            update_image_status(file_id, None, f"Unsupported file type: {mime_type}", original_filename)
+            update_document_status(file_id, None, f"Unsupported file type: {mime_type}", original_filename)
             continue
 
         # Upload the file to SharePoint
@@ -134,7 +167,7 @@ async def upload_images():
             folder_response = requests.get(folder_url, headers={"accept": "application/json;odata=verbose"}, auth=ntlm_auth)
 
             if folder_response.status_code != 200:
-                update_image_status(file_id, None, f"Folder not found: {folder_response.status_code}", original_filename)
+                update_document_status(file_id, None, f"Folder not found: {folder_response.status_code}", original_filename)
                 continue
 
             upload_url = urljoin(site_url, f"_api/web/GetFolderByServerRelativeUrl('/sites/{site_path}/{encoded_library_name}')/Files/add(url='{quote(filename)}',overwrite=true)")
@@ -159,8 +192,14 @@ async def upload_images():
                     update_metadata_url = urljoin(site_url, f"_api/web/lists/getbytitle('{encoded_library_name}')/items({item_id})")
                     update_data = {
                         "__metadata": {"type": list_item_type},  # Use the correct list item type
-                        "PIN": pin,
-                        "Document_x0020_Type": doctype
+                        "RSAPin": pin,
+                        "FirstName": firstname,
+                        "Surname": lastname,
+                        "OtherNames": middlename,
+                        "MobileNo": phone,
+                        "EmployerName": employer_name,
+                        "EmployerCode": employer_code,
+                        "DocumentType": doctype
                     }
                     update_headers = {
                         "accept": "application/json;odata=verbose",
@@ -175,15 +214,15 @@ async def upload_images():
                         sharepoint_file_link = urljoin(site_url, f"/sites/{site_path}/{encoded_library_name}/{quote(filename)}")
 
                         # Update the SQL Server database with the SharePoint file link and status
-                        update_image_status(file_id, sharepoint_file_link, "Uploaded successfully", original_filename)
+                        update_document_status(file_id, sharepoint_file_link, "Uploaded successfully", original_filename)
                     else:
-                        update_image_status(file_id, None, f"Failed to update metadata: {update_response.text}", original_filename)
+                        update_document_status(file_id, None, f"Failed to update metadata: {update_response.text}", original_filename)
                 else:
-                    update_image_status(file_id, None, f"Failed to get file item: {file_item_response.text}", original_filename)
+                    update_document_status(file_id, None, f"Failed to get file item: {file_item_response.text}", original_filename)
             else:
-                update_image_status(file_id, None, f"Failed to upload: {upload_response.text}", original_filename)
+                update_document_status(file_id, None, f"Failed to upload: {upload_response.text}", original_filename)
         except Exception as e:
-            update_image_status(file_id, None, f"Failed to upload: {str(e)}", original_filename)
+            update_document_status(file_id, None, f"Failed to upload: {str(e)}", original_filename)
 
     return {"status": "success", "message": "Files uploaded successfully"}
 

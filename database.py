@@ -10,13 +10,18 @@ load_dotenv()
 
 
 # Spool records to push into sharepoint
-def get_images_and_metadata():
+def get_document_and_metadata(document_type):
+    if document_type == 'dmu':
+        document_type = 'DMU'
+    else:
+        document_type = 'CASE OR BA DOCUMENT'
     # Create the connection string and  URL-encode the username and password
     username = quote_plus(os.getenv('DB_USERNAME'))
     password = quote_plus(os.getenv('DB_PASSWORD'))
     server = os.getenv('DB_SERVER')
     database = os.getenv('DB_DATABASE')
     driver = quote_plus(os.getenv('DB_DRIVER'))
+    file_batch = os.getenv('FILE_BATCH_NO')
 
     # Create the connection string
     conn_str = f"mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}"
@@ -25,17 +30,20 @@ def get_images_and_metadata():
     engine = create_engine(conn_str)
 
     query_table = os.getenv('DB_TABLE_1')
-    query = (f"SELECT [RSAPIN] AS pin, [FILEID] AS fileid, [EDESC] AS 'desc', "
-             f"[DOCTYPE] AS doctype, [DOCTYPE DESCRIPTION] AS doctype_desc, "
-             f"[FILEITEM] AS file_item, [FILENAME] AS filename FROM {query_table} WHERE [status] IS NULL")
+    query = (f"SELECT TOP {file_batch} [FILEID] AS fileid, [RSAPIN] AS pin, [FNAME] AS firstname, "
+             f"[LNAME] AS lastname, [MNAME] AS middlename, [PHONE] AS phone, "
+             f"[EMPNAME] AS employer_name, [EMPCODE] AS employer_code, "
+             f"[DOCTYPE_NAME] AS doc_type, [EDESC] AS 'desc', [FILEITEM] AS file_item, "
+             f"[FILENAME] AS filename FROM {query_table}  WHERE [status] IS NULL "
+             f"AND [APPLICATION_TYPE] = ?")
 
     # Use the engine to read the SQL query into a DataFrame
-    df = pd.read_sql(query, engine)
+    df = pd.read_sql(query, engine, params=(document_type,))
 
     return df
 
 
-def update_image_status(ref_id, image_link, status, filename):
+def update_document_status(ref_id, doc_link, status, filename):
     # URL-encode the username and password
     username = quote_plus(os.getenv('DB_USERNAME'))
     password = quote_plus(os.getenv('DB_PASSWORD'))
@@ -53,14 +61,14 @@ def update_image_status(ref_id, image_link, status, filename):
 
     # Define the query using SQLAlchemy's text function
     query = text(
-        f"UPDATE {query_table} SET image_link = :image_link, "
+        f"UPDATE {query_table} SET doc_link = :doc_link, "
         f"status = :status WHERE fileid = :ref_id and filename = :filename "
     )
 
     # Execute the query with parameters
     with engine.connect() as connection:
         connection.execute(query, {
-            'image_link': image_link,
+            'doc_link': doc_link,
             'status': status,
             'filename': filename,
             'ref_id': ref_id
