@@ -44,6 +44,7 @@ This project is a FastAPI application that integrates with SQL Server to retriev
     DB_DATABASE=your_database_name
     DB_USERNAME=your_username
     DB_PASSWORD=your_password
+   FILE_BATCH_NO=number of files to push to SharePoint per batch e.g. 100
 
     SHAREPOINT_SITE_URL=http://your-sharepoint-site-url e.g. 'http://portal/sites'
     SHAREPOINT_SITE_PATH=site_path e.g. 'DocuCenter2'
